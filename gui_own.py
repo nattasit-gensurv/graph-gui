@@ -1,18 +1,16 @@
 import sys
-from PyQt6.QtWidgets import (
-    QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, QGraphicsItem,QGraphicsPathItem,
-    QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,
-    QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox,QGraphicsRectItem)
+from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
 from PyQt6.QtGui import QPen, QBrush, QColor, QPainter,QAction,QPainterPath
 from PyQt6.QtCore import Qt, QPointF, QLineF,QPoint
 import math
 import json
+import numpy as np
+import matplotlib.pyplot as plt
+from path_finder.path_finder import PathFinder,Obstacle,Robot,TagNode,TagMap,Graph
 
-from path_finder import PathFinder,Obstacle,Robot,TagNode,TagMap,Graph
 
 
-
-_ROBOT = Robot(length=2.0, max_speed=1.0, max_steer=41.0, current_pose=(0,0,0), turning_radius=1.5)
+ROBOT = Robot(length=1.5, max_speed=1.0, max_steer=41.0, current_pose=(0,0,0), turning_radius=20.0)
 
 ROLE_COLORS = {"depot": QColor("red"), "station": QColor("green"), "viapoint": QColor("grey")}
 
@@ -86,7 +84,8 @@ class IntervalPoint(QGraphicsEllipseItem):
 class EdgeItem(QGraphicsPathItem):
     def __init__(self, node_from, node_to, out_angle=0, in_angle=0):
         super().__init__()
-        self.path_finder = PathFinder(Obstacle,_ROBOT,TagMap)
+        self.robot_properties = RobotProperties()
+        self.path_finder = PathFinder(Obstacle,self.robot_properties.robot,TagMap)
         self.node_from = node_from
         self.node_to = node_to
         self.out_angle = out_angle
@@ -94,6 +93,7 @@ class EdgeItem(QGraphicsPathItem):
         self.interval_points = []
         self.pre_start,self.pre_end = self.node_from.pos(),self.node_to.pos()
         self.edge_type = 1
+        self.path_type = "auto" 
         self.setZValue(5)
         self.setPen(QPen(QColor("green"), 2))
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
@@ -109,26 +109,45 @@ class EdgeItem(QGraphicsPathItem):
             menu = QMenu()
             angle_action = menu.addAction("Edit Out/In Angles")
             interval_action = menu.addAction("Set Interval Points")
-            type_menu = menu.addMenu("Way Type")
-            type_one_direct = type_menu.addAction("one-way")
-            type_two_direct = type_menu.addAction("two-way")
+            dir_menu = menu.addMenu("Direction")
+            dir_one_direct = dir_menu.addAction("one-way")
+            dir_two_direct = dir_menu.addAction("two-way")
+
+            path_menu = menu.addMenu("Path types")
+            path_custom = path_menu.addAction("Custom")
+            path_auto = path_menu.addAction("Auto")
+            path_dubin = path_menu.addAction("Dubin")
+            
 
             delete_action = menu.addAction("Delete Edge") 
             action = menu.exec(event.screenPos())
             if action == angle_action:
                 dialog = EdgeEditDialog(self)
                 dialog.exec()
-            elif action == interval_action:
+            
+            elif action == interval_action and self.path_type == "custom":
                 n, ok = QInputDialog.getInt(None, "Interval Points", "Enter number of points:", 1, 1, 100)
                 if ok:
                     self.set_interval_points(n)
-            elif action == type_one_direct:
+            elif action == dir_one_direct:
                 self.edge_type = 1
                 self.update_edge()
-            elif action == type_two_direct:
+            elif action == dir_two_direct:
                 self.edge_type = 2
                 self.update_edge()
           
+            elif action == path_custom:
+                self.path_type = "custom"
+                self.update_edge()
+
+            elif action == path_auto:
+                self.path_type = "auto"
+                self.update_edge()
+            
+            elif action == path_dubin:
+                self.path_type = "dubin"
+                self.update_edge()
+
             elif action == delete_action:
                 scene = self.scene()
                 for pt in self.interval_points:
@@ -164,61 +183,113 @@ class EdgeItem(QGraphicsPathItem):
 
         self.update_edge()
 
+    def sigmoid_s(self,t):
+        return 1 / (1 + np.exp(-12*(t-0.5)))  # steepness adjustable
+
+    def generate_s_shaped_path(self,start, goal, n_points=40):
+        x0, y0, theta0_deg = start
+        x1, y1, theta1_deg = goal
+ 
+        theta0 = np.deg2rad(theta0_deg)
+        theta1 = np.deg2rad(theta1_deg)
+        
+        dist = np.hypot(x1 - x0, y1 - y0)
+        m0 = dist * 0.5
+        m1 = dist * 0.5
+
+        v0 = np.array([m0 * np.cos(theta0), m0 * np.sin(theta0)])
+        v1 = np.array([m1 * np.cos(theta1), m1 * np.sin(theta1)])
+        
+        t = np.linspace(0, 1, n_points)
+        t_s = self.sigmoid_s(t)
+        
+        h00 = 2*t_s**3 - 3*t_s**2 + 1
+        h10 = t_s**3 - 2*t_s**2 + t_s
+        h01 = -2*t_s**3 + 3*t_s**2
+        h11 = t_s**3 - t_s**2
+        
+        x = h00*x0 + h10*v0[0] + h01*x1 + h11*v1[0]
+        y = h00*y0 + h10*v0[1] + h01*y1 + h11*v1[1]
+        
+        return x, y
+
+    def offset_start(self,length:float,pose:tuple,angle)->tuple:
+        x,y = pose[0],pose[1]
+        angle_rad = math.radians(angle)
+        pose_ctrl = (x + length * math.cos(angle_rad),y + length * math.sin(angle_rad),angle)
+
+        return pose_ctrl
+    
+    def offset_end(self,length:float,pose:tuple,angle)->tuple:
+        x,y = pose[0],pose[1]
+        angle_rad = math.radians(angle)
+        pose_ctrl = (x - length * math.cos(angle_rad), y - length * math.sin(angle_rad),angle)
+        return pose_ctrl
+    
     def update_edge(self):
         path = QPainterPath()
         start = self.node_from.pos()
         end = self.node_to.pos()
-
         pts = []
+        if self.path_type == "custom":
+            if self.edge_type == 1 or self.edge_type == 2 :
+                length = 40
+                angle_rad = math.radians(self.out_angle)
+                start_ctrl = QPointF(start.x() + length * math.cos(angle_rad),
+                                    start.y() + length * math.sin(angle_rad))
+                pts.append(start)
+                pts.append(start_ctrl)
 
+            for p in self.interval_points:
+                pts.append(p.pos())
 
-        if self.edge_type == 1 or self.edge_type == 2 :
-            length = 40
-            angle_rad = math.radians(self.out_angle)
-            start_ctrl = QPointF(start.x() + length * math.cos(angle_rad),
-                                start.y() + length * math.sin(angle_rad))
-            pts.append(start)
-            pts.append(start_ctrl)
-            # pass
-
-        for p in self.interval_points:
-            pts.append(p.pos())
-
-
-        if self.edge_type == 1 or self.edge_type == 2:
-            length = 40
-            angle_rad2 = math.radians(self.in_angle)
-            end_ctrl = QPointF(end.x() - length * math.cos(angle_rad2),
-                            end.y() - length * math.sin(angle_rad2))
-            pts.append(end_ctrl)
-            pts.append(end)
+            if self.edge_type == 1 or self.edge_type == 2:
+                length = 40
+                angle_rad2 = math.radians(self.in_angle)
+                end_ctrl = QPointF(end.x() - length * math.cos(angle_rad2),
+                                end.y() - length * math.sin(angle_rad2))
+                pts.append(end_ctrl)
+                pts.append(end)
    
-        # elif self.edge_type == "dubin":
-        #     try:
-        #         start_pos = (float(start.x()), float(start.y()), float(self.out_angle))
-        #         end_pos = (float(end.x()), float(end.y()), float(self.in_angle))
-        #         print("Start:", start_pos)
-        #         print("End:", end_pos)
-        #         # pathdub = self.path_finder.hybrid_astar_planner(start_pos, end_pos, obstacle=[])
-        #         # path_dir = self.path_finder.direct_planner(start_pos, end_pos,step=0.5)
-        #         path_arc = self.path_finder.arc_planner(start_pos, end_pos,step=0.3,dir="cw",R=0.5)
-        #         # path_rrt  = self.path_finder.rrt_planner(start_pos, end_pos, obstacle=[])
-        #         self.pre_start = start
-        #         self.pre_end = end
-        #         if path_arc is not None:
-        #             print("Found")
-        #             for vp in path_arc:
-        #                 pts.append(QPointF(vp[0], vp[1]))
-        #     except:
-        #         pass
+        elif self.path_type == "auto":
+            start_pos = (float(start.x()), float(start.y()), float(self.out_angle))
+            end_pos = (float(end.x()), float(end.y()), float(self.in_angle))
+            start_ctrl = self.offset_start(40,(start_pos[0],start_pos[1]),self.out_angle)
+            end_ctrl = self.offset_end(40,(end_pos[0],end_pos[1]),self.in_angle)
+            x,y = self.generate_s_shaped_path(start_ctrl,end_ctrl)
+            scene = self.scene()
+            for pt in self.interval_points:
+                scene.removeItem(pt)
+            pt_start = QPointF(start_pos[0],start_pos[1])
+            pts.append(pt_start)
+            for i in range(len(x)):
+                pts.append(QPointF(x[i],y[i]))
+            pts.append(QPointF(end_pos[0],end_pos[1]))
+
+        elif self.path_type == "dubin":
+            start_pos = [float(start.x()), float(start.y()), float(self.out_angle)]
+            end_pos = [float(end.x()), float(end.y()), float(self.in_angle)]
+            start_ctrl = self.offset_start(40,(start_pos[0],start_pos[1]),self.out_angle)
+            end_ctrl = self.offset_end(40,(end_pos[0],end_pos[1]),self.in_angle)
+            start_ctrl = (start_ctrl[0],start_ctrl[1],start_ctrl[2])
+            end_ctrl = (end_ctrl[0],end_ctrl[1],end_ctrl[2])
+            path_list, path_type, lengthh = self.path_finder.dubins_path_planning(start_ctrl, end_ctrl,self.robot_properties.turning_radius,step_size=1.0)
+            scene = self.scene()
+            for pt in self.interval_points:
+                scene.removeItem(pt)
+            pt_start = QPointF(start_pos[0],start_pos[1])
+            pts.append(pt_start)
+            for point in path_list:
+                pts.append(QPointF(point[0],point[1]))
+            pts.append(QPointF(end_pos[0],end_pos[1]))
 
         try:
             path.moveTo(pts[0])
             for pt in pts[1:]:
                 path.lineTo(pt)
             self.setPath(path)
-        except:
-            pass
+        except Exception as e:
+            print(e)
 
     def set_angles(self, out_angle, in_angle):
         self.out_angle = out_angle
@@ -231,8 +302,15 @@ class EdgeEditDialog(QDialog):
         self.edge = edge
         self.setWindowTitle("Edit Edge Angles")
         self.layout = QFormLayout()
-        self.out_input = QLineEdit(str(edge.out_angle))
-        self.in_input = QLineEdit(str(edge.in_angle))
+        # self.out_input = QLineEdit(str(edge.out_angle))
+        # self.in_input = QLineEdit(str(edge.in_angle))
+        self.angle_choice = ["0","90","180","270"]
+        self.out_input = QComboBox(self)
+        self.out_input.addItems(self.angle_choice)
+        self.in_input = QComboBox(self)
+        self.in_input.addItems(self.angle_choice)
+
+
         self.layout.addRow("Node1 Out Angle:", self.out_input)
         self.layout.addRow("Node2 In Angle:", self.in_input)
         self.btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -243,7 +321,7 @@ class EdgeEditDialog(QDialog):
 
     def apply(self):
         try:
-            self.edge.set_angles(float(self.out_input.text()), float(self.in_input.text()))
+            self.edge.set_angles(float(self.out_input.currentText()), float(self.in_input.currentText()))
             self.accept()
         except ValueError:
             pass
@@ -578,14 +656,36 @@ class GraphicsView(QGraphicsView):
         self.properties_widget.set_node(None)
         self.properties_widget.set_edge(None)
 
+class RobotProperties(Robot):
+    def __init__(self):
+        try:
+            with open("config/_robot.json", "r") as f:
+                self.data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", " robot's configuration file not found !")
+            exit()
+        self.name = self.data.get("robot_name", "agv_dummy")
+        self.type = self.data.get("robot_type", "diffdrive")
+        self.length = self.data.get("length", 2.0)
+        self.max_speed = self.data.get("max_speed", 2.0)
+        self.max_steer = self.data.get("max_steer", 45.0)
+        self.current_pose = self.data.get("current_pose",[0,0,0])
+        self.turning_radius = self.data.get("turning_radius", 1.0)
+        self.robot = Robot(self.name,self.type,self.length,self.max_speed,self.max_steer,self.current_pose,self.turning_radius)
+        # self.get_data()
 
+    def get_data(self):
+        pass
+
+
+    
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        
+        self.robot_properties = RobotProperties()
         self.scene = QGraphicsScene(-500, -500, 1000, 1000)
         self.properties_panel = NodeProperties()
-
-        #Create node-grraph
         self.select_graph = None
         self.initial_one_way = False
         self.initial_two_way = False
@@ -622,12 +722,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.right_panel, 1)
         central.setLayout(layout)
         self.setCentralWidget(central)
-
         
         self.toolbar = QToolBar("Main Toolbar")
         self.addToolBar(self.toolbar)
 
-        # Mode toggle
         self.mode_label = QLabel("Mode: None")
         self.toolbar.addWidget(self.mode_label)
 
@@ -713,7 +811,8 @@ class MainWindow(QMainWindow):
             self.toolbar.addAction(self.draw_action)
             self.toolbar.addAction(self.edge_action)
             self.toolbar.addAction(self.undo_action)
-            self.view.mode = 'draw'
+            self.view.mode = 'select'
+            self.mode_label.setText("Mode: Create Graph")
         elif mode == "finder":
             self.mode_label.setText("Mode: Path Finder")
             self.create_graph_action.setChecked(False)
@@ -767,7 +866,8 @@ class MainWindow(QMainWindow):
                 "to": edge.node_to.tag_id,
                 "out_angle": edge.out_angle,
                 "in_angle": edge.in_angle,
-                "way_type": edge.edge_type,
+                "direction": edge.edge_type,
+                "path_type": edge.path_type,
                 "interval_points": [(p.pos().x(), p.pos().y()) for p in edge.interval_points],
                 "path_points": []
             }
@@ -780,7 +880,7 @@ class MainWindow(QMainWindow):
         if fname:
             with open(fname, "w") as f:
                 json.dump(data, f, indent=4)
-    
+            QMessageBox.information(self, "Notice", "File has been saved !")
     def load_graph(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Load Graph", "", "JSON Files (*.json)")
         if not fname:
@@ -816,9 +916,12 @@ class MainWindow(QMainWindow):
                     print(f"Skipping orphan edge: {ed}")
                     continue
                 self.edge_info.append({"from": ed["from"] , 'to': ed['to'] ,'out_angle' : ed['out_angle'],
-                                       'in_angle': ed["in_angle"],'path_pts': ed["path_points"]})
+                                       'in_angle': ed["in_angle"],'direction': ed['direction'],
+                                       'path_type': ed['path_type'],'path_pts': ed["path_points"]})
                 n1, n2 = id_to_node[ed["from"]], id_to_node[ed["to"]]
                 edge = EdgeItem(n1, n2, ed.get("out_angle", 0), ed.get("in_angle", 0))
+                edge.edge_type = ed['direction']
+                edge.path_type = ed['path_type']
                 self.scene.addItem(edge)
                 self.view.edges.append(edge)
 

@@ -1,0 +1,9 @@
+{
+  "robot_name": "Pioneer3DX",
+  "robot_type": "differential_drive",
+  "length": 2.5,
+  "max_speed": 1.0,
+  "max_steer": 35.0,
+  "current_pose": [0.0,0.0,0.0],
+  "turning_radius": 50.0
+}
