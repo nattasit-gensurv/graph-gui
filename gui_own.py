@@ -1,5 +1,5 @@
 import sys
-from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
+from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,QSizePolicy, QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
 from PyQt6.QtGui import QPen, QBrush, QColor, QPainter,QAction,QPainterPath
 from PyQt6.QtCore import Qt, QPointF, QLineF,QPoint
 import math
@@ -10,9 +10,9 @@ from path_finder.path_finder import PathFinder,Obstacle,Robot,TagNode,TagMap,Gra
 
 
 
-ROBOT = Robot(length=1.5, max_speed=1.0, max_steer=41.0, current_pose=(0,0,0), turning_radius=20.0)
 
 ROLE_COLORS = {"depot": QColor("red"), "station": QColor("green"), "viapoint": QColor("grey")}
+
 
 class NodeItem(QGraphicsEllipseItem):
     def __init__(self, tag_id, name, pose, role, radius=20):
@@ -90,9 +90,11 @@ class EdgeItem(QGraphicsPathItem):
         self.node_to = node_to
         self.out_angle = out_angle
         self.in_angle = in_angle
+        self.out_offset = 0.0
+        self.in_offset = 0.0
         self.interval_points = []
         self.pre_start,self.pre_end = self.node_from.pos(),self.node_to.pos()
-        self.edge_type = 1
+        self.is_one_way = True
         self.path_type = "auto" 
         self.setZValue(5)
         self.setPen(QPen(QColor("green"), 2))
@@ -107,7 +109,8 @@ class EdgeItem(QGraphicsPathItem):
             self.setPen(QPen(QColor("red"), 2))
         elif event.button() == Qt.MouseButton.RightButton:
             menu = QMenu()
-            angle_action = menu.addAction("Edit Out/In Angles")
+            angle_action = menu.addAction("Out/In Angles")
+            offset_action = menu.addAction("Out/In Offset")
             interval_action = menu.addAction("Set Interval Points")
             dir_menu = menu.addMenu("Direction")
             dir_one_direct = dir_menu.addAction("one-way")
@@ -118,22 +121,26 @@ class EdgeItem(QGraphicsPathItem):
             path_auto = path_menu.addAction("Auto")
             path_dubin = path_menu.addAction("Dubin")
             
-
             delete_action = menu.addAction("Delete Edge") 
+
             action = menu.exec(event.screenPos())
             if action == angle_action:
-                dialog = EdgeEditDialog(self)
+                dialog = EdgeEditDialog(self,"angle")
                 dialog.exec()
-            
+
+            elif action == offset_action:
+                dialog = EdgeEditDialog(self,"offset")
+                dialog.exec()
+                
             elif action == interval_action and self.path_type == "custom":
                 n, ok = QInputDialog.getInt(None, "Interval Points", "Enter number of points:", 1, 1, 100)
                 if ok:
                     self.set_interval_points(n)
             elif action == dir_one_direct:
-                self.edge_type = 1
+                self.is_one_way = True
                 self.update_edge()
             elif action == dir_two_direct:
-                self.edge_type = 2
+                self.is_one_way = False
                 self.update_edge()
           
             elif action == path_custom:
@@ -232,30 +239,27 @@ class EdgeItem(QGraphicsPathItem):
         end = self.node_to.pos()
         pts = []
         if self.path_type == "custom":
-            if self.edge_type == 1 or self.edge_type == 2 :
-                length = 40
+            if self.is_one_way == True or self.is_one_way == False :
                 angle_rad = math.radians(self.out_angle)
-                start_ctrl = QPointF(start.x() + length * math.cos(angle_rad),
-                                    start.y() + length * math.sin(angle_rad))
+                start_ctrl = QPointF(start.x() + self.out_offset * math.cos(angle_rad),
+                                    start.y() + self.out_offset * math.sin(angle_rad))
                 pts.append(start)
                 pts.append(start_ctrl)
-
             for p in self.interval_points:
                 pts.append(p.pos())
-
-            if self.edge_type == 1 or self.edge_type == 2:
-                length = 40
+            
+            if self.is_one_way == True or self.is_one_way == False :
                 angle_rad2 = math.radians(self.in_angle)
-                end_ctrl = QPointF(end.x() - length * math.cos(angle_rad2),
-                                end.y() - length * math.sin(angle_rad2))
+                end_ctrl = QPointF(end.x() - self.in_offset * math.cos(angle_rad2),
+                                end.y() - self.in_offset * math.sin(angle_rad2))
                 pts.append(end_ctrl)
                 pts.append(end)
    
         elif self.path_type == "auto":
             start_pos = (float(start.x()), float(start.y()), float(self.out_angle))
             end_pos = (float(end.x()), float(end.y()), float(self.in_angle))
-            start_ctrl = self.offset_start(40,(start_pos[0],start_pos[1]),self.out_angle)
-            end_ctrl = self.offset_end(40,(end_pos[0],end_pos[1]),self.in_angle)
+            start_ctrl = self.offset_start(self.out_offset,(start_pos[0],start_pos[1]),self.out_angle)
+            end_ctrl = self.offset_end(self.in_offset,(end_pos[0],end_pos[1]),self.in_angle)
             x,y = self.generate_s_shaped_path(start_ctrl,end_ctrl)
             scene = self.scene()
             for pt in self.interval_points:
@@ -269,8 +273,8 @@ class EdgeItem(QGraphicsPathItem):
         elif self.path_type == "dubin":
             start_pos = [float(start.x()), float(start.y()), float(self.out_angle)]
             end_pos = [float(end.x()), float(end.y()), float(self.in_angle)]
-            start_ctrl = self.offset_start(40,(start_pos[0],start_pos[1]),self.out_angle)
-            end_ctrl = self.offset_end(40,(end_pos[0],end_pos[1]),self.in_angle)
+            start_ctrl = self.offset_start(self.out_offset,(start_pos[0],start_pos[1]),self.out_angle)
+            end_ctrl = self.offset_end(self.in_offset,(end_pos[0],end_pos[1]),self.in_angle)
             start_ctrl = (start_ctrl[0],start_ctrl[1],start_ctrl[2])
             end_ctrl = (end_ctrl[0],end_ctrl[1],end_ctrl[2])
             path_list, path_type, lengthh = self.path_finder.dubins_path_planning(start_ctrl, end_ctrl,self.robot_properties.turning_radius,step_size=1.0)
@@ -296,35 +300,95 @@ class EdgeItem(QGraphicsPathItem):
         self.in_angle = in_angle
         self.update_edge()
 
+    def set_offset(self,out_offset,in_offset):
+        self.out_offset = out_offset
+        self.in_offset  = in_offset
+        self.update_edge()
+
 class EdgeEditDialog(QDialog):
-    def __init__(self, edge: EdgeItem):
+    def __init__(self, edge: EdgeItem, type: str):
         super().__init__()
         self.edge = edge
-        self.setWindowTitle("Edit Edge Angles")
-        self.layout = QFormLayout()
-        # self.out_input = QLineEdit(str(edge.out_angle))
-        # self.in_input = QLineEdit(str(edge.in_angle))
-        self.angle_choice = ["0","90","180","270"]
-        self.out_input = QComboBox(self)
-        self.out_input.addItems(self.angle_choice)
-        self.in_input = QComboBox(self)
-        self.in_input.addItems(self.angle_choice)
 
+        if type == "angle":
+            self.setWindowTitle("Edit Edge Angles")
+            self.layout = QFormLayout()
+            self.angle_choice = ["0", "90", "180", "270"]
+            self.out_input = QComboBox(self)
+            self.out_input.addItems(self.angle_choice)
+            self.in_input = QComboBox(self)
+            self.in_input.addItems(self.angle_choice)
 
-        self.layout.addRow("Node1 Out Angle:", self.out_input)
-        self.layout.addRow("Node2 In Angle:", self.in_input)
-        self.btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.btns.accepted.connect(self.apply)
-        self.btns.rejected.connect(self.reject)
-        self.layout.addWidget(self.btns)
-        self.setLayout(self.layout)
+            self.layout.addRow("Node1 Out Angle:", self.out_input)
+            self.layout.addRow("Node2 In Angle:", self.in_input)
 
-    def apply(self):
+            self.btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            )
+            self.btns.accepted.connect(self.apply_angle)
+            self.btns.rejected.connect(self.reject)
+            self.layout.addWidget(self.btns)
+            self.setLayout(self.layout)
+
+        elif type == "offset":
+            self.setWindowTitle("Edit out/in offset")
+            self.layout = QFormLayout()
+
+            self.out_input_offset = QLineEdit(str(edge.out_offset))
+            self.in_input_offset = QLineEdit(str(edge.in_offset))
+            self.fixed_input_checkbox = QCheckBox("Use fixed offset (both)")
+            self.fixed_offset_edit = QLineEdit()
+            self.fixed_offset_edit.setEnabled(False)  # disabled until checked
+
+            self.layout.addRow("Node1 Out Offset:", self.out_input_offset)
+            self.layout.addRow("Node2 In Offset:", self.in_input_offset)
+            self.layout.addRow("", self.fixed_input_checkbox)
+            self.layout.addRow("Fixed offset value:", self.fixed_offset_edit)
+
+            self.fixed_input_checkbox.stateChanged.connect(self.toggle_offset_mode)
+
+            self.btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            )
+            self.btns.accepted.connect(self.apply_offset)
+            self.btns.rejected.connect(self.reject)
+            self.layout.addWidget(self.btns)
+            self.setLayout(self.layout)
+
+    def toggle_offset_mode(self, state):
+        if state == 2:
+            is_checked = state == 2  # 0 = unchecked, 2 = checked
+            self.out_input_offset.setEnabled(not is_checked)
+            self.in_input_offset.setEnabled(not is_checked)
+            self.fixed_offset_edit.setEnabled(is_checked)
+        elif state == 0:
+            is_checked = state == 0  # 0 = unchecked, 2 = checked
+            self.out_input_offset.setEnabled(is_checked)
+            self.in_input_offset.setEnabled(is_checked)
+            self.fixed_offset_edit.setEnabled(not is_checked)
+
+    def apply_angle(self):
         try:
-            self.edge.set_angles(float(self.out_input.currentText()), float(self.in_input.currentText()))
+            self.edge.set_angles(
+                float(self.out_input.currentText()), float(self.in_input.currentText())
+            )
             self.accept()
         except ValueError:
             pass
+
+    def apply_offset(self):
+        try:
+            if self.fixed_input_checkbox.isChecked():
+                fixed_val = float(self.fixed_offset_edit.text())
+                self.edge.set_offset(fixed_val, fixed_val)
+            else:
+                out_val = float(self.out_input_offset.text())
+                in_val = float(self.in_input_offset.text())
+                self.edge.set_offset(out_val, in_val)
+            self.accept()
+        except ValueError:
+            pass
+
 
 class NodeProperties(QWidget):
     def __init__(self, parent=None):
@@ -409,15 +473,25 @@ class NodeProperties(QWidget):
 
 
 class ConfigDialog(QDialog):
-    def __init__(self, parent, origin_x, origin_y):
+    def __init__(self, parent, origin_x, origin_y, default_out_offset=0.0, default_in_offset=0.0):
         super().__init__(parent)
         self.setWindowTitle("Configuration")
         self.layout = QFormLayout()
+
+        # Origin settings
         self.origin_x_input = QLineEdit(str(origin_x))
         self.origin_y_input = QLineEdit(str(origin_y))
         self.layout.addRow("Origin X:", self.origin_x_input)
         self.layout.addRow("Origin Y:", self.origin_y_input)
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+
+        # Default offsets for all edges
+        self.default_out_offset_input = QLineEdit(str(default_out_offset))
+        self.default_in_offset_input = QLineEdit(str(default_in_offset))
+        self.layout.addRow("Default Out Offset:", self.default_out_offset_input)
+        self.layout.addRow("Default In Offset:", self.default_in_offset_input)
+
+        # Buttons
+        self.buttons = QDialogButtonBox( QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         self.layout.addWidget(self.buttons)
@@ -428,6 +502,14 @@ class ConfigDialog(QDialog):
             x = float(self.origin_x_input.text())
             y = float(self.origin_y_input.text())
             return x, y
+        except ValueError:
+            return None, None
+
+    def get_default_offsets(self):
+        try:
+            out_val = float(self.default_out_offset_input.text())
+            in_val = float(self.default_in_offset_input.text())
+            return out_val, in_val
         except ValueError:
             return None, None
 
@@ -591,9 +673,9 @@ class GraphicsView(QGraphicsView):
             self.temp_node.setPos(self.start_pos.x(), self.start_pos.y())
             self.temp_node.update_arrow()
 
-        
         scene_pos = self.mapToScene(event.pos())
         clicked_items = self.scene().items(scene_pos)
+
         if self.mode == 'select' and clicked_items :
             
             scene_pos = self.mapToScene(event.pos())
@@ -674,9 +756,8 @@ class RobotProperties(Robot):
         self.robot = Robot(self.name,self.type,self.length,self.max_speed,self.max_steer,self.current_pose,self.turning_radius)
         # self.get_data()
 
-    def get_data(self):
-        pass
-
+    def update_data(self):
+        print("Call API")
 
     
 class MainWindow(QMainWindow):
@@ -746,7 +827,7 @@ class MainWindow(QMainWindow):
         self.find_path_btn.clicked.connect(self.on_find_path)
 
         self.highlight_items = []
-        self.interval_points = []  # keep track of interval points
+        self.interval_points = [] 
 
         self.select_action = QAction("↖", self)
         self.select_action.triggered.connect(lambda: self.set_mode('select'))
@@ -758,7 +839,7 @@ class MainWindow(QMainWindow):
         self.draw_action.setToolTip("Draw node")
         self.toolbar.addAction(self.draw_action)
 
-        self.edge_action = QAction("🔄", self)
+        self.edge_action = QAction("🔗", self)
         self.edge_action.triggered.connect(lambda: self.set_mode('edge'))
         self.edge_action.setToolTip("Pair edge")
         self.toolbar.addAction(self.edge_action)
@@ -787,7 +868,9 @@ class MainWindow(QMainWindow):
         self.clear_action.triggered.connect(self.view.clear_all)
         self.clear_action.setToolTip("Clear all")
         self.toolbar.addAction(self.clear_action)
+        
 
+ 
         self.mouse_pos_label = QLabel("(0, 0)")
         self.statusBar().addPermanentWidget(self.mouse_pos_label)
 
@@ -834,12 +917,17 @@ class MainWindow(QMainWindow):
             node.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
 
     def open_config(self):
-        dialog = ConfigDialog(self, self.view.origin.x(), self.view.origin.y())
-        if dialog.exec():
+        dialog = ConfigDialog(self, origin_x=self.view.origin.x(), origin_y=self.view.origin.y())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             x, y = dialog.get_origin()
             if x is not None and y is not None:
                 self.view.origin = QPointF(x, y)
-                self.view.viewport().update()
+
+            out_off, in_off = dialog.get_default_offsets()
+            if out_off is not None and in_off is not None:
+                for edge in self.view.edges:
+                    edge.set_offset(out_off, in_off)
+
     def save_graph(self):
         data = {"nodes": [], "edges": []}
         existing_nodes = set(self.view.nodes)
@@ -866,7 +954,9 @@ class MainWindow(QMainWindow):
                 "to": edge.node_to.tag_id,
                 "out_angle": edge.out_angle,
                 "in_angle": edge.in_angle,
-                "direction": edge.edge_type,
+                "out_offset": edge.out_offset,
+                "in_offset": edge.in_offset,
+                "is_one_way": edge.is_one_way,
                 "path_type": edge.path_type,
                 "interval_points": [(p.pos().x(), p.pos().y()) for p in edge.interval_points],
                 "path_points": []
@@ -881,6 +971,7 @@ class MainWindow(QMainWindow):
             with open(fname, "w") as f:
                 json.dump(data, f, indent=4)
             QMessageBox.information(self, "Notice", "File has been saved !")
+
     def load_graph(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Load Graph", "", "JSON Files (*.json)")
         if not fname:
@@ -916,12 +1007,15 @@ class MainWindow(QMainWindow):
                     print(f"Skipping orphan edge: {ed}")
                     continue
                 self.edge_info.append({"from": ed["from"] , 'to': ed['to'] ,'out_angle' : ed['out_angle'],
-                                       'in_angle': ed["in_angle"],'direction': ed['direction'],
+                                       'in_angle': ed["in_angle"],'out_offset': ed['out_offset'],
+                                       'in_offset': ed['in_offset'] ,'is_one_way': ed['is_one_way'],
                                        'path_type': ed['path_type'],'path_pts': ed["path_points"]})
                 n1, n2 = id_to_node[ed["from"]], id_to_node[ed["to"]]
                 edge = EdgeItem(n1, n2, ed.get("out_angle", 0), ed.get("in_angle", 0))
-                edge.edge_type = ed['direction']
+                edge.is_one_way = ed['is_one_way']
                 edge.path_type = ed['path_type']
+                edge.out_offset = ed['out_offset']
+                edge.in_offset = ed['in_offset']
                 self.scene.addItem(edge)
                 self.view.edges.append(edge)
 
