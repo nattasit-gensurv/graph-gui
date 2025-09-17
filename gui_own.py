@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,QSizePolicy, QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
 from PyQt6.QtGui import QPen, QBrush, QColor, QPainter,QAction,QPainterPath
-from PyQt6.QtCore import Qt, QPointF, QLineF,QPoint
+from PyQt6.QtCore import Qt, QPointF, QLineF,QPoint,QTimer
 import math
 import json
 import numpy as np
@@ -738,7 +738,7 @@ class GraphicsView(QGraphicsView):
         self.properties_widget.set_node(None)
         self.properties_widget.set_edge(None)
 
-class RobotProperties(Robot):
+class RobotProperties():
     def __init__(self):
         try:
             with open("config/_robot.json", "r") as f:
@@ -746,6 +746,8 @@ class RobotProperties(Robot):
         except Exception as e:
             QMessageBox.warning(self, "Error", " robot's configuration file not found !")
             exit()
+        
+        self.connect_server = False
         self.name = self.data.get("robot_name", "agv_dummy")
         self.type = self.data.get("robot_type", "diffdrive")
         self.length = self.data.get("length", 2.0)
@@ -754,10 +756,22 @@ class RobotProperties(Robot):
         self.current_pose = self.data.get("current_pose",[0,0,0])
         self.turning_radius = self.data.get("turning_radius", 1.0)
         self.robot = Robot(self.name,self.type,self.length,self.max_speed,self.max_steer,self.current_pose,self.turning_radius)
-        # self.get_data()
+        
 
     def update_data(self):
         print("Call API")
+
+        self.msg = QMessageBox()
+        self.msg.setIcon(QMessageBox.Icon.Information)      # PyQt6
+        self.msg.setWindowTitle("Status")
+        self.msg.setText("Connecting to Server . . .")
+        self.msg.setStandardButtons(QMessageBox.StandardButton.NoButton)  # PyQt6
+
+        self.msg.show()
+        QTimer.singleShot(3000, lambda: self.msg.accept())
+        # if self.msg.dis:
+        #     QMessageBox.information(None,"Status","Connected to server ✅")
+
 
     
 class MainWindow(QMainWindow):
@@ -806,6 +820,10 @@ class MainWindow(QMainWindow):
         
         self.toolbar = QToolBar("Main Toolbar")
         self.addToolBar(self.toolbar)
+
+        self.sub_toolbar = QToolBar("Sub_Toolbar")
+        self.addToolBar(self.sub_toolbar)
+
 
         self.mode_label = QLabel("Mode: None")
         self.toolbar.addWidget(self.mode_label)
@@ -868,6 +886,17 @@ class MainWindow(QMainWindow):
         self.clear_action.triggered.connect(self.view.clear_all)
         self.clear_action.setToolTip("Clear all")
         self.toolbar.addAction(self.clear_action)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.sub_toolbar.addWidget(spacer)
+        self.update_btn = QAction("🌐", self)
+        self.update_btn.triggered.connect(self.robot_properties.update_data)
+        self.update_btn.setToolTip("Syncing data with DataBase")
+        self.sub_toolbar.addAction(self.update_btn)
+       
+
+
         
 
  
