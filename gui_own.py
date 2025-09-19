@@ -1,13 +1,15 @@
-import sys
-from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,QSizePolicy, QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
-from PyQt6.QtGui import QPen, QBrush, QColor, QPainter,QAction,QPainterPath
+import sys,os
+import yaml
+from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,QToolButton,QSizePolicy, QGraphicsPixmapItem,QGraphicsItem,QGraphicsPathItem,QGraphicsLineItem, QGraphicsTextItem, QDialog, QFormLayout, QLineEdit, QComboBox, QPushButton,QToolBar, QMainWindow,QWidget,QHBoxLayout,QMenu,QLabel,QDialogButtonBox,QInputDialog,QFileDialog,QVBoxLayout,QGroupBox,QMessageBox, QCheckBox)
+from PyQt6.QtGui import QPen, QBrush, QColor, QPainter,QAction,QPainterPath,QPixmap, QKeyEvent, QIcon
 from PyQt6.QtCore import Qt, QPointF, QLineF,QPoint,QTimer
+
 import math
 import json
 import numpy as np
-import matplotlib.pyplot as plt
 from path_finder.path_finder import PathFinder,Obstacle,Robot,TagNode,TagMap,Graph
 
+import random
 
 
 
@@ -82,9 +84,9 @@ class IntervalPoint(QGraphicsEllipseItem):
 
 
 class EdgeItem(QGraphicsPathItem):
-    def __init__(self, node_from, node_to, out_angle=0, in_angle=0):
+    def __init__(self, node_from, node_to, out_angle=0, in_angle=0,is_one_way=True):
         super().__init__()
-        self.robot_properties = RobotProperties()
+        self.robot_properties = robot_properties
         self.path_finder = PathFinder(Obstacle,self.robot_properties.robot,TagMap)
         self.node_from = node_from
         self.node_to = node_to
@@ -94,10 +96,13 @@ class EdgeItem(QGraphicsPathItem):
         self.in_offset = 0.0
         self.interval_points = []
         self.pre_start,self.pre_end = self.node_from.pos(),self.node_to.pos()
-        self.is_one_way = True
+        self.is_one_way = is_one_way
         self.path_type = "auto" 
         self.setZValue(5)
-        self.setPen(QPen(QColor("green"), 2))
+        if self.is_one_way:
+            self.setPen(QPen(QColor("green"), 2))
+        else:
+            self.setPen(QPen(QColor("yellow"), 2))
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.update_edge()
 
@@ -105,7 +110,10 @@ class EdgeItem(QGraphicsPathItem):
         if event.button() == Qt.MouseButton.LeftButton:
             for item in self.scene().items():
                 if isinstance(item, EdgeItem) and item is not self:
-                    item.setPen(QPen(QColor("green"), 2))
+                    if item.is_one_way:
+                        item.setPen(QPen(QColor("green"), 2))
+                    else:
+                        item.setPen(QPen(QColor("yellow"), 2))
             self.setPen(QPen(QColor("red"), 2))
         elif event.button() == Qt.MouseButton.RightButton:
             menu = QMenu()
@@ -138,9 +146,11 @@ class EdgeItem(QGraphicsPathItem):
                     self.set_interval_points(n)
             elif action == dir_one_direct:
                 self.is_one_way = True
+                
                 self.update_edge()
             elif action == dir_two_direct:
                 self.is_one_way = False
+                self.setPen(QPen(QColor("yellow"), 2))
                 self.update_edge()
           
             elif action == path_custom:
@@ -535,11 +545,19 @@ class GraphicsView(QGraphicsView):
         self._is_panning = False
         self._pan_start = QPoint()
 
+        self.robot_item = robot_item
+        self.robot_item.setZValue(20)
+        self.robot_item.setScale(0.25) 
+
+        # self.map_item
+        
+
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
-                
-
+    
+    def update_robot_graphic(self, x, y, yaw):
+        self.robot_item.move_to(x, y, yaw)
 
     def drawBackground(self, painter, rect):
         left = int(rect.left()) - int(rect.left()) % self.grid_size
@@ -608,7 +626,10 @@ class GraphicsView(QGraphicsView):
         clicked_items = self.scene().items(scene_pos)
         if not any(isinstance(i, EdgeItem) for i in clicked_items):
             for item in self.edges:
-                item.setPen(QPen(QColor("green"), 2))
+                if item.is_one_way:
+                    item.setPen(QPen(QColor("green"), 2))
+                else:
+                    item.setPen(QPen(QColor("yellow"), 2))
 
         if self.mode == 'draw' and event.button() == Qt.MouseButton.LeftButton:
             self.start_pos = scene_pos
@@ -725,6 +746,7 @@ class GraphicsView(QGraphicsView):
             self.properties_widget.set_node(None)
 
     def clear_all(self):
+       
         for node in list(self.node_stack) + list(self.nodes):
             self.scene().removeItem(node)
 
@@ -732,6 +754,7 @@ class GraphicsView(QGraphicsView):
             for pt in edge.interval_points:
                 self.scene().removeItem(pt)
             self.scene().removeItem(edge)
+        self.scene().removeItem(self.robot_item)
         self.nodes.clear()
         self.node_stack.clear()
         self.edges.clear()
@@ -747,7 +770,7 @@ class RobotProperties():
             QMessageBox.warning(self, "Error", " robot's configuration file not found !")
             exit()
         
-        self.connect_server = False
+        self.connect_server_status = False
         self.name = self.data.get("robot_name", "agv_dummy")
         self.type = self.data.get("robot_type", "diffdrive")
         self.length = self.data.get("length", 2.0)
@@ -760,17 +783,30 @@ class RobotProperties():
 
     def update_data(self):
         print("Call API")
+        self.connect_server_status = random.choice([True,False])
+        self.update_message_connecting_server()
 
+    def update_message_connecting_server(self):
         self.msg = QMessageBox()
-        self.msg.setIcon(QMessageBox.Icon.Information)      # PyQt6
+        self.msg.setIcon(QMessageBox.Icon.Information)     
         self.msg.setWindowTitle("Status")
         self.msg.setText("Connecting to Server . . .")
-        self.msg.setStandardButtons(QMessageBox.StandardButton.NoButton)  # PyQt6
-
+        self.msg.setStandardButtons(QMessageBox.StandardButton.NoButton) 
         self.msg.show()
-        QTimer.singleShot(3000, lambda: self.msg.accept())
-        # if self.msg.dis:
-        #     QMessageBox.information(None,"Status","Connected to server ✅")
+        
+        QTimer.singleShot(3000, self.update_message_status)
+        
+    def update_message_status(self):
+        if self.connect_server_status:
+            self.msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            self.msg.setText("Connected to server")
+        else:
+            self.msg.setIcon(QMessageBox.Icon.Warning)
+            self.msg.setStandardButtons(QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel)
+            self.msg.setText("Failed to connect to server")
+            result = self.msg.exec()  # modal, blocks until user clicks
+            if result == QMessageBox.StandardButton.Retry:
+                self.update_data()
 
 
     
@@ -778,7 +814,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.robot_properties = RobotProperties()
+        self.robot_properties = robot_properties
         self.scene = QGraphicsScene(-500, -500, 1000, 1000)
         self.properties_panel = NodeProperties()
         self.select_graph = None
@@ -789,6 +825,7 @@ class MainWindow(QMainWindow):
         self.two_way_graph = Graph('bi-direct')
 
         self.view = GraphicsView(self.scene, self.properties_panel, self)
+        
         self.properties_panel.view = self.view
         self.app_mode = "finder"  
         self.right_panel = QWidget()
@@ -825,8 +862,20 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.sub_toolbar)
 
 
-        self.mode_label = QLabel("Mode: None")
-        self.toolbar.addWidget(self.mode_label)
+        self.file_menu = QMenu("File", self)
+        self.import_menu = QMenu("Import 📤", self)
+        self.image_action = self.import_menu.addAction(QIcon("utils/photos.png"),  "Image map")
+        self.import_graph_action = self.import_menu.addAction(QIcon("utils/graph.png"),"Graph")
+        self.image_action.triggered.connect(self.load_yaml)
+        self.import_graph_action.triggered.connect(self.load_graph)
+
+        self.file_menu.addMenu(self.import_menu)
+        self.file_button = QToolButton()
+        self.file_button.setFixedSize(80,30)
+        self.file_button.setText(" File ")
+        self.file_button.setMenu(self.file_menu)
+        self.file_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.toolbar.addWidget(self.file_button)
 
         self.create_graph_action = QAction("📝 Create Graph", self)
         self.create_graph_action.setCheckable(True)
@@ -895,26 +944,24 @@ class MainWindow(QMainWindow):
         self.update_btn.setToolTip("Syncing data with DataBase")
         self.sub_toolbar.addAction(self.update_btn)
        
-
-
-        
-
- 
         self.mouse_pos_label = QLabel("(0, 0)")
         self.statusBar().addPermanentWidget(self.mouse_pos_label)
+
+        self.mode_label = QLabel(" mode : ")
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.statusBar().addWidget(self.mode_label )
 
         self.set_app_mode("finder")
 
         self.setWindowTitle("TY  -  GUI")
         self.resize(1200, 700)
         self.show()
-
-        
+    
 
     def set_app_mode(self, mode):
         self.app_mode = mode
         if mode == "create":
-            self.mode_label.setText("Mode: Create Graph")
+            self.mode_label.setText("  Mode: Create Graph  ")
             self.create_graph_action.setChecked(True)
             self.path_finder_action.setChecked(False)
             self.properties_panel.setEnabled(True)
@@ -924,9 +971,9 @@ class MainWindow(QMainWindow):
             self.toolbar.addAction(self.edge_action)
             self.toolbar.addAction(self.undo_action)
             self.view.mode = 'select'
-            self.mode_label.setText("Mode: Create Graph")
+            self.mode_label.setText("  Mode: Create Graph  ")
         elif mode == "finder":
-            self.mode_label.setText("Mode: Path Finder")
+            self.mode_label.setText("  Mode: Path Finder  ")
             self.create_graph_action.setChecked(False)
             self.path_finder_action.setChecked(True)
             self.properties_panel.setEnabled(False)  # still visible
@@ -940,7 +987,7 @@ class MainWindow(QMainWindow):
 
     def set_mode(self, mode):
         self.view.mode = mode
-        self.mode_label.setText(f"Mode: {mode.capitalize()}")
+        self.mode_label.setText(f" Mode: {mode.capitalize()}")
         movable = mode != 'edge'
         for node in self.view.node_stack:
             node.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
@@ -956,6 +1003,42 @@ class MainWindow(QMainWindow):
             if out_off is not None and in_off is not None:
                 for edge in self.view.edges:
                     edge.set_offset(out_off, in_off)
+    def load_yaml(self):
+        yaml_file, _ = QFileDialog.getOpenFileName(self, "Select Map YAML", "", "YAML Files (*.yaml *.yml)")
+        if not yaml_file:
+            return
+        try:
+            with open(yaml_file, "r") as f:
+                map_data = yaml.safe_load(f)
+
+            if "image" not in map_data:
+                QMessageBox.warning(self, "Error", "YAML does not contain 'image' field")
+                return
+
+            map_file = map_data["image"]
+
+            if not os.path.isabs(map_file):
+                map_file = os.path.join(os.path.dirname(yaml_file), map_file)
+
+            pixmap = QPixmap(map_file)
+            if pixmap.isNull():
+                QMessageBox.warning(self, "Error", f"Failed to load map: {map_file}")
+                return
+
+            self.scene.clear()
+            self.map_item = QGraphicsPixmapItem(pixmap)
+            self.map_item.setOpacity(0.63)
+            self.map_item.setZValue(-1)
+            self.scene.addItem(self.map_item)
+
+            self.map_resolution = map_data.get("resolution", 1.0)
+            self.map_origin = map_data.get("origin", [50, 50, 0])
+
+            print(f"✅ Loaded map: {map_file}")
+            print(f"   resolution={self.map_resolution}, origin={self.map_origin}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load YAML:\n{e}")
 
     def save_graph(self):
         data = {"nodes": [], "edges": []}
@@ -977,7 +1060,7 @@ class MainWindow(QMainWindow):
                 if edge in self.view.edges:
                     self.view.edges.remove(edge)
                 continue
-
+            
             edge_data = {
                 "from": edge.node_from.tag_id,
                 "to": edge.node_to.tag_id,
@@ -1007,9 +1090,18 @@ class MainWindow(QMainWindow):
             return
         with open(fname, "r") as f:
             data = json.load(f)
-        self.scene.clear()
-        self.view.nodes.clear()
-        self.view.edges.clear()
+        # self.scene.clear()
+
+        # self.view.nodes.clear()
+        # self.view.edges.clear()
+        try:
+            self.view.scene().addItem(self.view.robot_item)
+        except:
+            pass
+        # try:
+        #     self.scene.addItem(self.map_item)
+        # except:
+        #     print("cannot load")
         id_to_node = {}
         self.node_ids = []
         self.edge_info = []
@@ -1030,7 +1122,7 @@ class MainWindow(QMainWindow):
         self.goal_combo.clear()
         self.start_combo.addItems([str(i) for i in self.node_ids])
         self.goal_combo.addItems([str(i) for i in self.node_ids])
-
+        
         for ed in data.get("edges", []):
                 if ed["from"] not in id_to_node or ed["to"] not in id_to_node:
                     print(f"Skipping orphan edge: {ed}")
@@ -1040,7 +1132,7 @@ class MainWindow(QMainWindow):
                                        'in_offset': ed['in_offset'] ,'is_one_way': ed['is_one_way'],
                                        'path_type': ed['path_type'],'path_pts': ed["path_points"]})
                 n1, n2 = id_to_node[ed["from"]], id_to_node[ed["to"]]
-                edge = EdgeItem(n1, n2, ed.get("out_angle", 0), ed.get("in_angle", 0))
+                edge = EdgeItem(n1, n2, ed.get("out_angle", 0), ed.get("in_angle", 0),ed.get('is_one_way',True))
                 edge.is_one_way = ed['is_one_way']
                 edge.path_type = ed['path_type']
                 edge.out_offset = ed['out_offset']
@@ -1066,9 +1158,10 @@ class MainWindow(QMainWindow):
                             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
                         if isinstance(item, IntervalPoint):
                             item.setVisible(False)
-                  
+                    
                     edge.update_edge()
 
+    
     def clear_path_highlight(self):
         for node in self.view.nodes:
             if node.role == 'depot':
@@ -1144,7 +1237,66 @@ class MainWindow(QMainWindow):
                 edge.setPen(QPen(Qt.GlobalColor.blue, 3))
 
 
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_W:
+            self.view.robot_item.move_forward(10)
+        elif event.key() == Qt.Key.Key_S:
+            self.view.robot_item.move_backward(10)
+        elif event.key() == Qt.Key.Key_A:
+            self.view.robot_item.turn_left(10)
+        elif event.key() == Qt.Key.Key_D:
+            self.view.robot_item.turn_right(10)
+        else:
+            super().keyPressEvent(event)
+
+class RobotItem(QGraphicsPixmapItem):
+    def __init__(self, image_path, parent=None):
+        pixmap = QPixmap(image_path)
+        super().__init__(pixmap, parent)
+        self.setTransformOriginPoint(self.boundingRect().center())
+        self.yaw = 0.0
+    def move_to(self, x, y, yaw):
+        self.setPos(y, x)
+        self.setRotation(math.degrees(yaw))
+    
+    def move_forward(self, distance=10):
+        dx = distance * math.cos(self.yaw)
+        dy = distance * math.sin(self.yaw)
+        self.setPos(self.x() + dx, self.y() + dy)
+
+    def move_backward(self, distance=10):
+        dx = -distance * math.cos(self.yaw)
+        dy = -distance * math.sin(self.yaw)
+        self.setPos(self.x() + dx, self.y() + dy)
+
+    def turn_left(self, angle_deg=10):
+        self.yaw -= math.radians(angle_deg)
+        self.setRotation(math.degrees(self.yaw))
+
+    def turn_right(self, angle_deg=10):
+        self.yaw += math.radians(angle_deg)
+        self.setRotation(math.degrees(self.yaw))
+
+class RobotInterface():
+    def __init__(self,robot_properties_instance: RobotProperties,robot_item_instance: RobotItem):
+        self.properties = robot_properties_instance
+        self.graphic_item = robot_item_instance
+
+    
+    def get_properties(self):
+        return self.properties.robot.turning_radius
+    
+    def move_to(self,pose:tuple):
+        self.graphic_item.move_to(pose)
+    
+    
+
+
 if __name__ == "__main__":
+    
     app = QApplication(sys.argv)
+    robot_item = RobotItem("utils/car_bg.png")
+    robot_properties = RobotProperties()
+    robot_interface = RobotInterface(robot_properties,robot_item)
     window = MainWindow()
     sys.exit(app.exec())
