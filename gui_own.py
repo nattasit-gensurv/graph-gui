@@ -12,7 +12,7 @@ from path_finder.path_finder import PathFinder,Obstacle,Robot,TagNode,TagMap,Gra
 import random
 
 
-
+GRID_SIZE = 10
 ROLE_COLORS = {"depot": QColor("red"), "station": QColor("green"), "viapoint": QColor("grey")}
 
 
@@ -529,7 +529,7 @@ class GraphicsView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.zoom = 1.0
         self.mode = 'draw'
-        self.grid_size = 50
+        self.grid_size = GRID_SIZE
         self.origin = QPointF(0, 0)
         self.temp_node = None
         self.start_pos = None
@@ -550,8 +550,6 @@ class GraphicsView(QGraphicsView):
         self.robot_item.setScale(0.25) 
 
         # self.map_item
-        
-
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -562,7 +560,7 @@ class GraphicsView(QGraphicsView):
     def drawBackground(self, painter, rect):
         left = int(rect.left()) - int(rect.left()) % self.grid_size
         top = int(rect.top()) - int(rect.top()) % self.grid_size
-        pen = QPen(QColor(200, 200, 200))
+        pen = QPen(QColor(200, 200, 200, 125))
         painter.setPen(pen)
         x = left
         while x < rect.right():
@@ -957,7 +955,6 @@ class MainWindow(QMainWindow):
         self.resize(1200, 700)
         self.show()
     
-
     def set_app_mode(self, mode):
         self.app_mode = mode
         if mode == "create":
@@ -1026,16 +1023,34 @@ class MainWindow(QMainWindow):
                 return
 
             self.scene.clear()
-            self.map_item = QGraphicsPixmapItem(pixmap)
-            self.map_item.setOpacity(0.63)
-            self.map_item.setZValue(-1)
-            self.scene.addItem(self.map_item)
+            resolution = map_data.get("resolution", None)
+            origin = map_data.get("origin", [0, 0, 0])
 
-            self.map_resolution = map_data.get("resolution", 1.0)
-            self.map_origin = map_data.get("origin", [50, 50, 0])
+            width_px = pixmap.width()
+            height_px = pixmap.height()
 
-            print(f"✅ Loaded map: {map_file}")
-            print(f"   resolution={self.map_resolution}, origin={self.map_origin}")
+            if resolution is None:
+                QMessageBox.warning(self, "Warning", "No resolution in YAML")
+                resolution = 1.0
+
+            width_m = width_px * resolution
+            height_m = height_px * resolution
+
+            print(f"✅ Map loaded: {map_file}")
+            print(f"   Resolution: {resolution} m/px")
+            print(f"   Origin: {origin}")
+            print(f"   Image size: {width_px} x {height_px} px")
+            print(f"   Map size: {width_m:.2f} x {height_m:.2f} meters")
+
+            self.scene.clear()
+            map_item = QGraphicsPixmapItem(pixmap)
+            map_item.setZValue(-1)
+            map_item.setOpacity(0.75)
+            self.scene.addItem(map_item)
+
+            self.map_resolution = resolution
+            self.map_origin = origin
+            self.map_size = (width_m, height_m)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load YAML:\n{e}")
@@ -1098,10 +1113,7 @@ class MainWindow(QMainWindow):
             self.view.scene().addItem(self.view.robot_item)
         except:
             pass
-        # try:
-        #     self.scene.addItem(self.map_item)
-        # except:
-        #     print("cannot load")
+
         id_to_node = {}
         self.node_ids = []
         self.edge_info = []
